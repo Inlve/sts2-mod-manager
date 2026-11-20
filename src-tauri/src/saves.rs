@@ -338,24 +338,28 @@ fn add_dir_to_zip(
     current: &Path,
     options: zip::write::SimpleFileOptions,
 ) -> Result<(), String> {
-    if let Ok(entries) = fs::read_dir(current) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let rel = path
-                .strip_prefix(base)
-                .map_err(|e| e.to_string())?
-                .to_string_lossy()
-                .replace('\\', "/");
-            if path.is_dir() {
-                let _ = zip_writer.add_directory(&format!("{}/", rel), options);
-                add_dir_to_zip(zip_writer, base, &path, options)?;
-            } else {
-                zip_writer.start_file(&rel, options).map_err(|e| e.to_string())?;
-                let mut f = fs::File::open(&path).map_err(|e| e.to_string())?;
-                let mut buf = Vec::new();
-                f.read_to_end(&mut buf).map_err(|e| e.to_string())?;
-                std::io::Write::write_all(zip_writer, &buf).map_err(|e| e.to_string())?;
-            }
+    for entry in fs::read_dir(current).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        let kind = entry.file_type().map_err(|e| e.to_string())?;
+        let rel = path
+            .strip_prefix(base)
+            .map_err(|e| e.to_string())?
+            .to_string_lossy()
+            .replace('\\', "/");
+        if kind.is_dir() {
+            zip_writer
+                .add_directory(format!("{}/", rel), options)
+                .map_err(|e| e.to_string())?;
+            add_dir_to_zip(zip_writer, base, &path, options)?;
+        } else if kind.is_file() {
+            zip_writer
+                .start_file(&rel, options)
+                .map_err(|e| e.to_string())?;
+            let mut f = fs::File::open(&path).map_err(|e| e.to_string())?;
+            std::io::copy(&mut f, zip_writer).map_err(|e| e.to_string())?;
+        } else {
+            return Err(format!("无法备份特殊文件 {}", path.display()));
         }
     }
     Ok(())
@@ -589,165 +593,286 @@ pub struct ConvertResult {
     pub backup_path: Option<String>,
 }
 
-/// 递归复制目录，返回 (文件数, 字节数)。
 fn copy_tree_counted(src: &Path, dst: &Path) -> Result<(usize, u64), String> {
-    let mut files = 0usize;
-    let mut bytes = 0u64;
-    if !src.exists() {
-        return Ok((0, 0));
-    }
-    fs::create_dir_all(dst).map_err(|e| e.to_string())?;
-    for entry in fs::read_dir(src).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        if from.is_dir() {
-            let (f, b) = copy_tree_counted(&from, &to)?;
-            files += f;
-            bytes += b;
-        } else {
-            if let Some(parent) = to.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-            let size = fs::copy(&from, &to).map_err(|e| e.to_string())?;
-            files += 1;
-            bytes += size;
+    let copy = || -> std::io::Result<(usize, u64)> {
+        if !fs::symlink_metadata(src)?.is_dir() {
+            return Err(std::io::Error::other("需要普通目录"));
         }
+        fs::create_dir(dst)?;
+        let mut files = 0;
+        let mut bytes = 0;
+        for entry in fs::read_dir(src)? {
+            let entry = entry?;
+            let from = entry.path();
+            let to = dst.join(entry.file_name());
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                let (f, b) = copy_tree_counted(&from, &to).map_err(std::io::Error::other)?;
+                files += f;
+                bytes += b;
+            } else if kind.is_file() {
+                let expected = entry.metadata()?.len();
+                let copied = fs::copy(&from, &to)?;
+                if copied != expected || fs::metadata(&to)?.len() != expected {
+                    return Err(std::io::Error::other(format!(
+                        "文件大小校验失败 {}",
+                        from.display()
+                    )));
+                }
+                files += 1;
+                bytes += copied;
+            } else {
+                return Err(std::io::Error::other(format!(
+                    "不支持的文件 {}",
+                    from.display()
+                )));
+            }
+        }
+        Ok((files, bytes))
+    };
+    copy().map_err(|e| format!("复制 {} 失败：{e}", src.display()))
+}
+
+fn backup_slot(dst: &Path, dir: &Path, tag: &str) -> Result<PathBuf, String> {
+    let temp = tempfile::NamedTempFile::new_in(dir).map_err(|e| e.to_string())?;
+    let mut zip = zip::ZipWriter::new(temp.reopen().map_err(|e| e.to_string())?);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    add_dir_to_zip(&mut zip, dst.parent().unwrap(), dst, options)?;
+    zip.finish()
+        .map_err(|e| e.to_string())?
+        .sync_all()
+        .map_err(|e| e.to_string())?;
+    let unique = temp.path().file_name().unwrap().to_string_lossy();
+    let path = dir.join(format!(
+        "convert_{tag}_before_{}_{unique}.zip",
+        timestamp_string()
+    ));
+    temp.persist_noclobber(&path).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+fn install_staged(work: tempfile::TempDir, dst: &Path, had_target: bool) -> Result<(), String> {
+    let old = work.path().join("original");
+    if had_target {
+        fs::rename(dst, &old).map_err(|e| format!("无法移开目标槽位：{e}"))?;
     }
+    if let Err(e) = fs::rename(work.path().join("staged"), dst) {
+        if had_target {
+            if let Err(restore) = fs::rename(&old, dst) {
+                let _ = work.keep(); // 自动清理会删除唯一的原件
+                return Err(format!(
+                    "替换失败：{e}。还原失败：{restore}。原槽位保存在 {}",
+                    old.display()
+                ));
+            }
+        }
+        return Err(format!("替换目标槽位失败：{e}"));
+    }
+    Ok(())
+}
+
+fn convert_slot(
+    src: &Path,
+    dst: &Path,
+    backup_dir: &Path,
+    opts: &SaveConvertOpts,
+    backup_path: &mut Option<String>,
+) -> Result<(usize, u64), String> {
+    let parent = dst.parent().unwrap();
+    fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let work = tempfile::Builder::new()
+        .prefix(".sts2-convert-")
+        .tempdir_in(parent)
+        .map_err(|e| e.to_string())?;
+    let staged = work.path().join("staged");
+    fs::create_dir(&staged).map_err(|e| e.to_string())?;
+    let saves = staged.join("saves");
+    let (mut files, mut bytes) = copy_tree_counted(&src.join("saves"), &saves)?;
+    // 与扫描界面的空槽位判定一致，并拒绝仅含空文件的源。
+    let has_save = ["progress.save", "prefs.save"].iter().any(|name| {
+        fs::metadata(saves.join(name)).is_ok_and(|meta| meta.is_file() && meta.len() > 0)
+    });
+    if !has_save {
+        return Err("源槽位里没有可转换的存档数据".into());
+    }
+    let replays = src.join("replays");
+    if opts.include_replays && replays.try_exists().map_err(|e| e.to_string())? {
+        let (f, b) = copy_tree_counted(&replays, &staged.join("replays"))?;
+        files += f;
+        bytes += b;
+    }
+    let had_target = match fs::symlink_metadata(dst) {
+        Ok(meta) if meta.is_dir() => true,
+        Ok(_) => return Err("目标槽位不是目录".into()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => return Err(e.to_string()),
+    };
+    if opts.backup && had_target {
+        let kind = if opts.direction == "to_modded" {
+            "modded"
+        } else {
+            "normal"
+        };
+        let path = backup_slot(dst, backup_dir, &format!("{}_{kind}", opts.slot))
+            .map_err(|e| format!("备份失败：{e}"))?;
+        *backup_path = Some(path.display().to_string());
+    }
+    install_staged(work, dst, had_target)?;
     Ok((files, bytes))
 }
 
 #[tauri::command]
 pub fn saves_convert(opts: SaveConvertOpts) -> ConvertResult {
-    // 先把进错误结果要用到的字段复制出来，避免闭包借用 opts 后
-    // 又在末尾移出 opts.slot / opts.direction（借用检查会不答应）
-    let slot_echo = opts.slot.clone();
-    let direction_echo = opts.direction.clone();
-    let fail = |msg: String| ConvertResult {
-        success: false,
-        error: Some(msg),
-        slot: slot_echo.clone(),
-        direction: direction_echo.clone(),
-        copied_files: 0,
-        copied_bytes: 0,
-        backup_path: None,
-    };
-
-    // 存档正被游戏读写时搬家会损坏数据
-    if crate::game::is_game_running() {
-        return fail("游戏正在运行，请先退出游戏再转换存档".into());
-    }
-
-    let user_dir = match get_steam_user_dir() {
-        Some(d) => d,
-        None => return fail("未找到游戏存档目录".into()),
-    };
-
-    if !["profile1", "profile2", "profile3"].contains(&opts.slot.as_str()) {
-        return fail(format!("未知的存档槽位: {}", opts.slot));
-    }
-
-    let (src_root, dst_root) = match opts.direction.as_str() {
-        "to_modded" => (user_dir.clone(), user_dir.join("modded")),
-        "to_normal" => (user_dir.join("modded"), user_dir.clone()),
-        other => return fail(format!("未知的转换方向: {}", other)),
-    };
-
-    let src = src_root.join(&opts.slot);
-    let dst = dst_root.join(&opts.slot);
-
-    if !src.exists() {
-        return fail(format!(
-            "源存档 {} 不存在（{}）",
-            opts.slot,
-            if opts.direction == "to_modded" {
-                "普通存档里没有这个槽位"
-            } else {
-                "MOD 存档里没有这个槽位"
-            }
-        ));
-    }
-
-    let tag = if opts.direction == "to_modded" {
-        format!("{}_normal", opts.slot)
-    } else {
-        format!("{}_modded", opts.slot)
-    };
-
-    // ── 备份目标槽位 ──
-    let mut backup_path: Option<String> = None;
-    if opts.backup && dst.exists() {
-        let dir = get_save_backup_dir();
-        let path = dir.join(format!("convert_{}_before_{}.zip", tag, timestamp_string()));
-        let file = match fs::File::create(&path) {
-            Ok(f) => f,
-            Err(e) => return fail(format!("创建备份失败: {}", e)),
+    static CONVERSION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let mut backup_path = None;
+    let outcome = (|| {
+        let _guard = CONVERSION.try_lock().map_err(|_| "已有存档转换正在执行")?;
+        if crate::game::is_game_running() {
+            return Err("游戏正在运行，请先退出游戏再转换存档".into());
+        }
+        let user = get_steam_user_dir().ok_or("未找到游戏存档目录")?;
+        if !["profile1", "profile2", "profile3"].contains(&opts.slot.as_str()) {
+            return Err(format!("未知的存档槽位：{}", opts.slot));
+        }
+        let normal = user.join(&opts.slot);
+        let modded = user.join("modded").join(&opts.slot);
+        let (src, dst) = match opts.direction.as_str() {
+            "to_modded" => (normal, modded),
+            "to_normal" => (modded, normal),
+            other => return Err(format!("未知的转换方向：{other}")),
         };
-        let mut zip_writer = zip::ZipWriter::new(file);
-        let options = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
-        let listing: SimpleResult = {
-            match add_dir_to_zip(
-                &mut zip_writer,
-                dst.parent().unwrap_or(&dst),
-                &dst,
-                options,
-            ) {
-                Ok(_) => SimpleResult { success: true, error: None },
-                Err(e) => SimpleResult { success: false, error: Some(e) },
-            }
-        };
-        if let Some(e) = listing.error {
-            return fail(format!("备份失败: {}", e));
-        }
-        if let Err(e) = zip_writer.finish() {
-            return fail(format!("备份写入失败: {}", e));
-        }
-        backup_path = Some(path.to_string_lossy().to_string());
-    }
-
-    // ── 替换式复制：先清掉目标槽位，避免残留上一次的当前局文件 ──
-    if dst.exists() {
-        if let Err(e) = fs::remove_dir_all(&dst) {
-            return fail(format!("清理目标槽位失败: {}", e));
-        }
-    }
-    if let Err(e) = fs::create_dir_all(&dst) {
-        return fail(format!("创建目标槽位失败: {}", e));
-    }
-
-    let mut copied_files = 0usize;
-    let mut copied_bytes = 0u64;
-
-    match copy_tree_counted(&src.join("saves"), &dst.join("saves")) {
-        Ok((f, b)) => {
-            copied_files += f;
-            copied_bytes += b;
-        }
-        Err(e) => return fail(format!("复制存档失败: {}", e)),
-    }
-
-    if opts.include_replays {
-        match copy_tree_counted(&src.join("replays"), &dst.join("replays")) {
-            Ok((f, b)) => {
-                copied_files += f;
-                copied_bytes += b;
-            }
-            Err(e) => return fail(format!("复制回放失败: {}", e)),
-        }
-    }
-
-    if copied_files == 0 {
-        return fail("源槽位里没有可转换的存档文件".into());
-    }
-
+        convert_slot(&src, &dst, &get_save_backup_dir(), &opts, &mut backup_path)
+    })();
+    let success = outcome.is_ok();
+    let error = outcome.as_ref().err().map(|e| match &backup_path {
+        Some(path) => format!("{e}。覆盖前备份：{path}"),
+        None => e.clone(),
+    });
+    let (copied_files, copied_bytes) = outcome.unwrap_or_default();
     ConvertResult {
-        success: true,
-        error: None,
         slot: opts.slot,
         direction: opts.direction,
+        success,
+        error,
         copied_files,
         copied_bytes,
         backup_path,
+    }
+}
+
+#[cfg(test)]
+mod conversion_tests {
+    use super::*;
+
+    struct Fixture {
+        root: tempfile::TempDir,
+        src: PathBuf,
+        dst: PathBuf,
+        opts: SaveConvertOpts,
+        backup: Option<String>,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let root = tempfile::tempdir().unwrap();
+            let src = root.path().join("profile1");
+            let dst = root.path().join("modded/profile1");
+            fs::create_dir_all(src.join("saves")).unwrap();
+            fs::create_dir_all(dst.join("saves")).unwrap();
+            fs::write(dst.join("saves/old.save"), b"old").unwrap();
+            Self {
+                root,
+                src,
+                dst,
+                opts: SaveConvertOpts {
+                    slot: "profile1".into(),
+                    direction: "to_modded".into(),
+                    include_replays: true,
+                    backup: true,
+                },
+                backup: None,
+            }
+        }
+
+        fn convert(&mut self) -> Result<(usize, u64), String> {
+            convert_slot(
+                &self.src,
+                &self.dst,
+                self.root.path(),
+                &self.opts,
+                &mut self.backup,
+            )
+        }
+
+        fn assert_original(&self) {
+            assert_eq!(fs::read(self.dst.join("saves/old.save")).unwrap(), b"old");
+            assert!(!self.dst.join("saves/progress.save").exists());
+        }
+    }
+
+    #[test]
+    fn empty_source_with_replays_preserves_target() {
+        let mut f = Fixture::new();
+        fs::create_dir(f.src.join("replays")).unwrap();
+        fs::write(f.src.join("replays/run"), b"replay").unwrap();
+        assert!(f.convert().is_err());
+        f.assert_original();
+    }
+
+    #[test]
+    fn replay_copy_failure_after_save_copy_preserves_target_without_zip() {
+        let mut f = Fixture::new();
+        f.opts.backup = false;
+        fs::write(f.src.join("saves/progress.save"), b"new").unwrap();
+        fs::write(f.src.join("replays"), b"not a directory").unwrap();
+        assert!(f.convert().is_err());
+        f.assert_original();
+    }
+
+    #[test]
+    fn swap_failure_restores_original() {
+        let f = Fixture::new();
+        let work = tempfile::tempdir_in(f.dst.parent().unwrap()).unwrap();
+        // 缺少 staged，第二次 rename 必定失败。
+        assert!(install_staged(work, &f.dst, true).is_err());
+        f.assert_original();
+    }
+
+    #[test]
+    fn successful_swap_replaces_whole_slot_and_backs_up_old_bytes() {
+        let mut f = Fixture::new();
+        fs::write(f.src.join("saves/progress.save"), b"new").unwrap();
+        fs::create_dir(f.src.join("replays")).unwrap();
+        fs::write(f.src.join("replays/run"), b"replay").unwrap();
+        assert_eq!(f.convert().unwrap(), (2, 9));
+        assert_eq!(fs::read(f.dst.join("replays/run")).unwrap(), b"replay");
+        assert!(!f.dst.join("saves/old.save").exists());
+        let mut zip =
+            zip::ZipArchive::new(fs::File::open(f.backup.as_ref().unwrap()).unwrap()).unwrap();
+        let mut old = Vec::new();
+        zip.by_name("profile1/saves/old.save")
+            .unwrap()
+            .read_to_end(&mut old)
+            .unwrap();
+        assert_eq!(old, b"old");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn locked_target_returns_completed_backup() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let mut f = Fixture::new();
+        fs::write(f.src.join("saves/progress.save"), b"new").unwrap();
+        // FILE_FLAG_BACKUP_SEMANTICS allows a directory handle; deny delete sharing.
+        let _lock = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(0x02000000)
+            .share_mode(3)
+            .open(&f.dst)
+            .unwrap();
+        assert!(f.convert().unwrap_err().contains("无法移开"));
+        f.assert_original();
+        assert!(Path::new(f.backup.as_ref().unwrap()).is_file());
     }
 }

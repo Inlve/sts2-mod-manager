@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- 普通与 MOD 存档互转时先暂存并校验文件，避免空源或复制失败清空目标槽位。替换失败时自动回滚，错误提示包含已生成的 ZIP 备份路径。
+
 ## [1.2.0] - 2026-11-20
 
 ### Added
