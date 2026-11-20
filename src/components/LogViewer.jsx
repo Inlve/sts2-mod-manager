@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { FileText, RefreshCw, ChevronDown } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
+import { FileText, RefreshCw, ChevronDown, ArrowDown } from 'lucide-react';
 
 function colorLine(line) {
   if (line.includes('[ERROR]')) return 'text-red-600 bg-red-50';
@@ -8,7 +9,34 @@ function colorLine(line) {
   return 'text-gray-400';
 }
 
-const MAX_VISIBLE_LINES = 2000;
+/** 单行预估高度：leading-6(24) + py-0.5(4) + border-b(1) */
+const ROW_ESTIMATE = 29;
+/** 距底部多少像素内算"贴在底部"（留余量吸收动态测高的误差） */
+const BOTTOM_THRESHOLD = 32;
+/** 视口外多渲染几行，避免快速滚动时出现空白 */
+const OVERSCAN = 24;
+/** 自动刷新间隔 */
+const AUTO_REFRESH_MS = 3000;
+/** 搜索输入防抖 */
+const SEARCH_DEBOUNCE_MS = 180;
+
+/**
+ * 单行日志。memo 让虚拟列表重渲染时跳过内容未变的行。
+ *
+ * whitespace-pre-wrap：保留前导缩进（堆栈跟踪靠它对齐），同时允许换行。
+ * break-words：超长不可断词（长路径、base64）折行而不是横向溢出。
+ *
+ * 之所以不让它横向溢出：虚拟列表只渲染视口内的行，若靠横向滚动条显示长行，
+ * 滚动条会随"当前视口里有没有长行"时有时无，非常跳。折行则永远不需要横向滚动。
+ */
+const LogRow = React.memo(function LogRow({ no, text }) {
+  return (
+    <div className={`px-4 py-0.5 border-b border-gray-50 whitespace-pre-wrap break-words ${colorLine(text)}`}>
+      <span className="text-gray-300 mr-3 select-none">{String(no).padStart(5, ' ')}</span>
+      {text}
+    </div>
+  );
+});
 
 export default function LogViewer() {
   const [files, setFiles] = useState([]);
@@ -16,38 +44,145 @@ export default function LogViewer() {
   const [content, setContent] = useState('');
   const [filterLevel, setFilterLevel] = useState('all');
   const [search, setSearch] = useState('');
+  const [query, setQuery] = useState(''); // 防抖后的搜索词，真正参与过滤
   const [loading, setLoading] = useState(false);
-  const [visibleCount, setVisibleCount] = useState(MAX_VISIBLE_LINES);
 
-  const loadLogs = async () => {
+  // 是否"贴在底部"跟随最新消息：用户往上翻就停，滚回底部自动恢复
+  const [followBottom, setFollowBottom] = useState(true);
+  const [autoRefresh, setAutoRefresh] = useState(true);
+
+  const scrollRef = useRef(null);
+
+  /**
+   * 解析一次、复用多次：split / 去 CRLF / 小写化 / 错误告警计数
+   * 只在 content 变化时执行，避免每次按键或每次渲染都重解析整份日志。
+   */
+  const parsed = useMemo(() => {
+    const lines = content.split('\n');
+    // 文件以换行结尾时会多出一个空元素，会渲染成多余的空行
+    if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
+
+    let errorCount = 0;
+    let warnCount = 0;
+    const rows = new Array(lines.length);
+    for (let i = 0; i < lines.length; i++) {
+      // 兼容 CRLF 日志，去掉行尾的 \r
+      const raw = lines[i];
+      const text = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+      if (text.includes('[ERROR]')) errorCount++;
+      else if (text.includes('[WARN]')) warnCount++;
+      rows[i] = { no: i + 1, text, lower: text.toLowerCase() };
+    }
+    return { rows, errorCount, warnCount };
+  }, [content]);
+
+  const { rows, errorCount, warnCount } = parsed;
+
+  // 轻量过滤：复用预计算的小写串
+  const entries = useMemo(() => {
+    if (filterLevel === 'all' && !query) return rows;
+    const out = [];
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      if (filterLevel === 'error' && !r.text.includes('[ERROR]')) continue;
+      if (filterLevel === 'warn' && !r.text.includes('[WARN]') && !r.text.includes('[ERROR]')) continue;
+      if (query && !r.lower.includes(query)) continue;
+      out.push(r);
+    }
+    return out;
+  }, [rows, filterLevel, query]);
+
+  /**
+   * 虚拟列表：只渲染视口内的行，因此日志有多少行都不影响 DOM 节点数。
+   * 行高会被动态测量（长行换行会更高），先按单行高度预估。
+   */
+  const rowVirtualizer = useVirtualizer({
+    count: entries.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => ROW_ESTIMATE,
+    overscan: OVERSCAN,
+    // 用日志真实行号做 key：过滤/刷新后测量结果仍能对上同一行
+    getItemKey: (index) => entries[index]?.no ?? index,
+  });
+
+  // 数据集整体变化（切文件/改筛选/改搜索）时，旧的行高测量已失效，重置掉
+  const datasetKey = `${selectedFile}\u0000${filterLevel}\u0000${query}`;
+  useEffect(() => {
+    rowVirtualizer.measure();
+  }, [datasetKey, rowVirtualizer]);
+
+  // 跟随底部：滚动到最后一行；动态测高会修正总高度，故下一帧再贴一次
+  useEffect(() => {
+    if (!followBottom || entries.length === 0) return;
+    rowVirtualizer.scrollToIndex(entries.length - 1, { align: 'end' });
+    const raf = requestAnimationFrame(() => {
+      const el = scrollRef.current;
+      if (el) el.scrollTop = el.scrollHeight;
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [entries, followBottom, rowVirtualizer]);
+
+  // 监听滚动，判断是否还贴在底部
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_THRESHOLD;
+      setFollowBottom(prev => (prev === atBottom ? prev : atBottom));
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => el.removeEventListener('scroll', onScroll);
+  }, []);
+
+  // 搜索防抖
+  useEffect(() => {
+    if (search === '') {
+      setQuery('');
+      return;
+    }
+    const t = setTimeout(() => setQuery(search.trim().toLowerCase()), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  const loadLogs = useCallback(async () => {
     setLoading(true);
     const data = await window.api.getLatestLogs();
     setFiles(data.files);
     setContent(data.content);
+    setFollowBottom(true);
     if (data.files.length > 0) setSelectedFile(data.files[0]);
     setLoading(false);
-  };
+  }, []);
 
-  useEffect(() => { loadLogs(); }, []);
+  useEffect(() => { loadLogs(); }, [loadLogs]);
 
   const handleFileChange = async (fileName) => {
     setSelectedFile(fileName);
     setLoading(true);
-    setVisibleCount(MAX_VISIBLE_LINES);
+    setFollowBottom(true);
     const c = await window.api.readLog(fileName);
     setContent(c);
     setLoading(false);
   };
 
-  const lines = content.split('\n').filter(line => {
-    if (filterLevel === 'error' && !line.includes('[ERROR]')) return false;
-    if (filterLevel === 'warn' && !line.includes('[WARN]') && !line.includes('[ERROR]')) return false;
-    if (search && !line.toLowerCase().includes(search.toLowerCase())) return false;
-    return true;
-  });
+  // 自动刷新：内容没变时 setContent 传入同一字符串，React 会跳过重渲染，
+  // 因此不会打断用户翻看历史
+  useEffect(() => {
+    if (!autoRefresh || !selectedFile) return;
+    const id = setInterval(async () => {
+      try {
+        const c = await window.api.readLog(selectedFile);
+        setContent(prev => (prev === c ? prev : c));
+      } catch (e) {
+        // 游戏正在写日志时可能读到半行，忽略这一轮即可
+      }
+    }, AUTO_REFRESH_MS);
+    return () => clearInterval(id);
+  }, [autoRefresh, selectedFile]);
 
-  const errorCount = content.split('\n').filter(l => l.includes('[ERROR]')).length;
-  const warnCount = content.split('\n').filter(l => l.includes('[WARN]')).length;
+  const jumpToBottom = () => setFollowBottom(true);
+
+  const filtered = entries.length !== rows.length;
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -64,6 +199,11 @@ export default function LogViewer() {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            <label className="flex items-center gap-1.5 px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-600 cursor-pointer hover:bg-gray-100 transition-colors select-none">
+              <input type="checkbox" checked={autoRefresh} onChange={(e) => setAutoRefresh(e.target.checked)}
+                className="w-3.5 h-3.5 rounded border-gray-300 text-blue-500" />
+              自动刷新
+            </label>
             <button onClick={loadLogs}
               className="flex items-center gap-2 px-4 py-2 border border-gray-200 rounded-lg text-sm font-medium hover:bg-gray-100 transition-colors">
               <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> 刷新
@@ -107,30 +247,56 @@ export default function LogViewer() {
             placeholder="搜索日志..."
             className="flex-1 max-w-xs px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-gray-200"
           />
+
+          <span className="text-[11px] text-gray-400 ml-auto">
+            {filtered ? `${entries.length} / ${rows.length} 行` : `${rows.length} 行`}
+            {!followBottom && <span className="ml-2 text-amber-500 font-medium">已暂停跟随</span>}
+          </span>
         </div>
       </div>
 
       {/* Log content */}
-      <div className="flex-1 overflow-y-auto px-8 pb-6">
-        <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
-          <div className="font-mono text-xs leading-6">
-            {lines.slice(0, visibleCount).map((line, i) => (
-              <div key={i} className={`px-4 py-0.5 border-b border-gray-50 ${colorLine(line)}`}>
-                <span className="text-gray-300 mr-3 select-none">{String(i + 1).padStart(3, ' ')}</span>
-                {line}
+      <div className="flex-1 overflow-hidden px-8 pb-6">
+        <div className="relative h-full bg-white rounded-xl border border-gray-100 overflow-hidden">
+          <div
+            ref={scrollRef}
+            className="h-full overflow-y-auto overflow-x-auto font-mono text-xs leading-6"
+          >
+            {entries.length === 0 ? (
+              <div className="px-4 py-8 text-center text-gray-400 font-sans">暂无日志内容</div>
+            ) : (
+              <div style={{ height: rowVirtualizer.getTotalSize(), width: '100%', position: 'relative' }}>
+                {rowVirtualizer.getVirtualItems().map((vItem) => {
+                  const row = entries[vItem.index];
+                  if (!row) return null;
+                  return (
+                    <div
+                      key={vItem.key}
+                      data-index={vItem.index}
+                      ref={rowVirtualizer.measureElement}
+                      style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        width: '100%',
+                        transform: `translateY(${vItem.start}px)`,
+                      }}
+                    >
+                      <LogRow no={row.no} text={row.text} />
+                    </div>
+                  );
+                })}
               </div>
-            ))}
-            {lines.length > visibleCount && (
-              <button
-                onClick={() => setVisibleCount(c => c + MAX_VISIBLE_LINES)}
-                className="w-full px-4 py-3 text-center text-sm text-blue-600 hover:bg-blue-50 transition-colors">
-                还有 {lines.length - visibleCount} 行，点击加载更多
-              </button>
-            )}
-            {lines.length === 0 && (
-              <div className="px-4 py-8 text-center text-gray-400">暂无日志内容</div>
             )}
           </div>
+
+          {/* 回到底部：只在用户往上翻时出现 */}
+          {!followBottom && (
+            <button onClick={jumpToBottom}
+              className="absolute bottom-4 right-5 flex items-center gap-1.5 px-3 py-2 rounded-full bg-gray-900 text-white text-xs font-medium shadow-lg hover:bg-gray-800 transition-colors">
+              <ArrowDown size={13} /> 回到底部
+            </button>
+          )}
         </div>
       </div>
     </div>
