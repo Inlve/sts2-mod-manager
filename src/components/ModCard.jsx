@@ -25,11 +25,12 @@ function getModCategory(mod, allMods) {
   return { label: '资源类', color: 'bg-teal-50 text-teal-600', icon: Palette };
 }
 
-export default function ModCard({ mod, allMods, translations, onToggle, onClick, selected }) {
+export default function ModCard({ mod, allMods, translations, onToggle, onClick, selected, conflict }) {
   const missingDeps = getMissingDeps(mod, allMods);
   const category = getModCategory(mod, allMods);
   const CategoryIcon = category.icon;
   const t = translations && translations[mod.id];
+  const isWorkshop = mod.source === 'workshop';
 
   return (
     <div
@@ -77,9 +78,19 @@ export default function ModCard({ mod, allMods, translations, onToggle, onClick,
 
       {/* Tags */}
       <div className="flex items-center gap-1.5 flex-wrap">
+        <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-medium ${
+          isWorkshop ? 'bg-sky-50 text-sky-600' : 'bg-gray-100 text-gray-600'
+        }`}>
+          {isWorkshop ? '创意工坊' : '本地'}
+        </span>
         <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium ${category.color}`}>
           <CategoryIcon size={11} /> {category.label}
         </span>
+        {conflict && (
+          <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-medium bg-orange-100 text-orange-700" title="同一 Mod ID 在本地与创意工坊同时存在，可能重复加载">
+            ID 重复
+          </span>
+        )}
         {!mod.enabled && (
           <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-medium bg-gray-100 text-gray-500">已禁用</span>
         )}

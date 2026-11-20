@@ -20,6 +20,7 @@ export default function App() {
   const [gamePath, setGamePath] = useState(null);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');
+  const [sourceFilter, setSourceFilter] = useState('all');
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState(null);
   const [dragOver, setDragOver] = useState(false);
@@ -81,6 +82,8 @@ export default function App() {
     (async () => {
       const info = await window.api.init();
       setGamePath(info.gamePath);
+      // 后端现在会直接从 release_info.json 读版本，比解析日志可靠
+      if (info.gameVersion) setGameVersion(info.gameVersion);
       if (info.gamePath) {
         const list = await window.api.scanMods();
         syncMods(list);
@@ -110,6 +113,21 @@ export default function App() {
   };
 
   const handleUninstall = (mod) => {
+    // 创意工坊内容归 Steam 管，删了会被重新下载，只能引导去取消订阅
+    if (mod.source === 'workshop') {
+      setConfirmDialog({
+        title: `${mod.name} 是创意工坊 MOD`,
+        message: '它由 Steam 自动下载和维护，管理器无法直接删除。要移除它，需要在 Steam 的创意工坊页面取消订阅。是否现在打开该页面？',
+        danger: false,
+        confirmText: '打开创意工坊',
+        onConfirm: () => {
+          setConfirmDialog(null);
+          if (mod.workshopUrl) window.api.openUrl(mod.workshopUrl);
+        },
+      });
+      return;
+    }
+
     const dependents = mods.filter(m => m.dependencies && m.dependencies.includes(mod.id) && m.enabled);
     setConfirmDialog({
       title: `卸载 ${mod.name}`,
@@ -262,9 +280,47 @@ export default function App() {
 
   const isFramework = (mod) => mods.some(m => m.id !== mod.id && m.dependencies && m.dependencies.includes(mod.id));
 
+  // 同一 Mod ID 同时在本地和创意工坊存在时，游戏可能把两份都加载，导致行为异常。
+  // 这里按 id 统计，出现多次就标成"ID 重复"。
+  const idCounts = mods.reduce((acc, m) => {
+    if (m.id) acc[m.id] = (acc[m.id] || 0) + 1;
+    return acc;
+  }, {});
+  const conflictingIds = new Set(Object.keys(idCounts).filter(id => idCounts[id] > 1));
+
+  const workshopCount = mods.filter(m => m.source === 'workshop').length;
+  const localCount = mods.length - workshopCount;
+
+  // 组内排序：具体的排序方式只决定"同一启用状态内部"的顺序
+  const compareByMode = (a, b) => {
+    switch (sortBy) {
+      case 'depIssues': {
+        const aIssue = hasMissingDeps(a) ? 0 : 1;
+        const bIssue = hasMissingDeps(b) ? 0 : 1;
+        return aIssue - bIssue;
+      }
+      case 'gameplay': {
+        const aScore = (a.affects_gameplay || a.has_dll) ? 0 : 1;
+        const bScore = (b.affects_gameplay || b.has_dll) ? 0 : 1;
+        return aScore - bScore;
+      }
+      case 'category': {
+        const catOrder = (m) => (isFramework(m) ? 0 : (m.affects_gameplay || m.has_dll) ? 1 : 2);
+        return catOrder(a) - catOrder(b);
+      }
+      case 'size':
+        return (b.size || 0) - (a.size || 0);
+      case 'name':
+      default:
+        return 0;
+    }
+  };
+
   const filteredMods = mods.filter(m => {
     if (filter === 'enabled' && !m.enabled) return false;
     if (filter === 'disabled' && m.enabled) return false;
+    if (sourceFilter === 'workshop' && m.source !== 'workshop') return false;
+    if (sourceFilter === 'local' && m.source === 'workshop') return false;
     if (search) {
       const s = search.toLowerCase();
       return (m.name || '').toLowerCase().includes(s)
@@ -273,25 +329,11 @@ export default function App() {
     }
     return true;
   }).sort((a, b) => {
-    switch (sortBy) {
-      case 'name': return (a.name || '').localeCompare(b.name || '');
-      case 'depIssues': {
-        const aIssue = hasMissingDeps(a) ? 0 : 1;
-        const bIssue = hasMissingDeps(b) ? 0 : 1;
-        return aIssue - bIssue || (a.name || '').localeCompare(b.name || '');
-      }
-      case 'gameplay': {
-        const aScore = (a.affects_gameplay || a.has_dll) ? 0 : 1;
-        const bScore = (b.affects_gameplay || b.has_dll) ? 0 : 1;
-        return aScore - bScore || (a.name || '').localeCompare(b.name || '');
-      }
-      case 'category': {
-        const catOrder = (m) => isFramework(m) ? 0 : (m.affects_gameplay || m.has_dll) ? 1 : 2;
-        return catOrder(a) - catOrder(b) || (a.name || '').localeCompare(b.name || '');
-      }
-      case 'size': return (b.size || 0) - (a.size || 0);
-      default: return 0;
-    }
+    // 已启用的始终排在前面——这是主序，和 Rust 扫描返回的顺序一致。
+    // 所选排序方式只作用于组内，避免"按名称"把禁用的 MOD 顶到已启用前面。
+    if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
+    // 名称作为兜底，保证任何排序方式下顺序都是确定的
+    return compareByMode(a, b) || (a.name || '').localeCompare(b.name || '');
   });
 
   const enabledCount = mods.filter(m => m.enabled).length;
@@ -327,6 +369,7 @@ export default function App() {
                     <h1 className="text-2xl font-bold">MOD 管理</h1>
                     <p className="text-sm text-gray-500 mt-1">
                       共 {mods.length} 个 MOD · {enabledCount} 已启用 · {disabledCount} 已禁用
+                      {mods.length > 0 && <span className="text-gray-400">（工坊 {workshopCount} / 本地 {localCount}）</span>}
                     </p>
                   </div>
                   <div className="flex items-center gap-2">
@@ -420,6 +463,21 @@ export default function App() {
                       </button>
                     ))}
                   </div>
+                  {/* 来源筛选：创意工坊 / 本地 */}
+                  <div className="flex bg-gray-100 rounded-lg p-0.5">
+                    {[
+                      ['all', `全部 ${mods.length}`],
+                      ['workshop', `工坊 ${workshopCount}`],
+                      ['local', `本地 ${localCount}`],
+                    ].map(([key, label]) => (
+                      <button key={key} onClick={() => setSourceFilter(key)}
+                        className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                          sourceFilter === key ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                        }`}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
                   {/* Sort dropdown */}
                   <div className="relative">
                     <button onClick={() => setShowSortMenu(!showSortMenu)}
@@ -429,7 +487,7 @@ export default function App() {
                       <ChevronDown size={11} className="text-gray-400" />
                     </button>
                     {showSortMenu && (
-                      <div className="absolute right-0 top-full mt-1 w-40 bg-white rounded-xl shadow-xl border border-gray-100 z-50 overflow-hidden py-1">
+                      <div className="absolute right-0 top-full mt-1 w-44 bg-white rounded-xl shadow-xl border border-gray-100 z-50 overflow-hidden py-1">
                         {[['name', '按名称'], ['depIssues', '依赖问题优先'], ['gameplay', '影响玩法优先'], ['category', '按分类'], ['size', '按大小']].map(([key, label]) => (
                           <button key={key}
                             onClick={() => { setSortBy(key); setShowSortMenu(false); }}
@@ -439,6 +497,9 @@ export default function App() {
                             {label}
                           </button>
                         ))}
+                        <p className="px-3 pt-2 pb-1 text-[10px] leading-relaxed text-gray-400 border-t border-gray-50 mt-1">
+                          已启用的 MOD 始终排在前面
+                        </p>
                       </div>
                     )}
                   </div>
@@ -584,6 +645,7 @@ export default function App() {
                             mod={mod}
                             allMods={mods}
                             translations={translations}
+                            conflict={conflictingIds.has(mod.id)}
                             onToggle={() => handleToggle(mod)}
                             onClick={() => setSelectedMod(mod)}
                             selected={selectedMod?.instanceKey === mod.instanceKey}
@@ -628,6 +690,7 @@ export default function App() {
                           mod={mod}
                           allMods={mods}
                           translations={translations}
+                          conflict={conflictingIds.has(mod.id)}
                           selected={selectedMod?.instanceKey === mod.instanceKey}
                           multiSelected={selectedIds.has(mod.instanceKey)}
                           onToggle={() => handleToggle(mod)}
@@ -804,7 +867,7 @@ export default function App() {
               <button onClick={confirmDialog.onConfirm}
                 style={{ backgroundColor: confirmDialog.danger ? '#dc2626' : '#111827', color: '#fff' }}
                 className="flex-1 py-2.5 rounded-lg text-sm font-medium transition-colors">
-                确认
+                {confirmDialog.confirmText || '确认'}
               </button>
               <button onClick={() => setConfirmDialog(null)}
                 className="flex-1 py-2.5 rounded-lg text-sm font-medium border border-gray-200 text-gray-700 hover:bg-gray-50 transition-colors">

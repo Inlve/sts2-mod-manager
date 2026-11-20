@@ -128,6 +128,8 @@ export default function ModDetail({ mod, allMods, onClose, onToggle, onUninstall
             ['版本', mod.version || '未知'],
             ['大小', formatSize(mod.size)],
             ['类型', mod.isFolder ? '文件夹 MOD' : '独立文件 MOD'],
+            ['来源', mod.source === 'workshop' ? '创意工坊（Steam 托管）' : '本地 / 手动安装'],
+            ...(mod.minGameVersion ? [['最低游戏版本', mod.minGameVersion]] : []),
           ].map(([label, value]) => (
             <div key={label} className="flex items-center justify-between">
               <span className="text-xs text-gray-400">{label}</span>
@@ -135,6 +137,19 @@ export default function ModDetail({ mod, allMods, onClose, onToggle, onUninstall
             </div>
           ))}
         </div>
+
+        {/* Workshop link */}
+        {mod.source === 'workshop' && mod.workshopUrl && (
+          <button
+            onClick={() => window.api.openUrl(mod.workshopUrl)}
+            className="w-full flex items-center justify-between px-3 py-2 rounded-lg bg-sky-50 text-sky-700 hover:bg-sky-100 transition-colors"
+          >
+            <span className="text-xs font-medium">在创意工坊查看</span>
+            <span className="flex items-center gap-1 text-[11px] text-sky-500">
+              #{mod.workshopId} <ExternalLink size={11} />
+            </span>
+          </button>
+        )}
 
         {/* Description */}
         <div>
@@ -169,6 +184,7 @@ export default function ModDetail({ mod, allMods, onClose, onToggle, onUninstall
               const isMissing = missingDeps.includes(dep);
               const depMod = allMods.find(m => m.id === dep);
               const canJump = depMod && onSelectMod;
+              const depVer = (mod.dependencyVersions || []).find(d => d.id === dep)?.minVersion;
               return (
                 <div key={dep}
                   onClick={canJump ? () => onSelectMod(depMod) : undefined}
@@ -176,7 +192,10 @@ export default function ModDetail({ mod, allMods, onClose, onToggle, onUninstall
                     isMissing ? 'bg-red-50 text-red-600' : 'bg-emerald-50 text-emerald-600'
                   } ${canJump ? 'cursor-pointer hover:ring-1 hover:ring-current/20 transition-all' : ''}`}>
                   {isMissing ? <AlertTriangle size={14} /> : <Box size={14} />}
-                  <span className="flex-1 truncate">{depMod ? depMod.name : dep}</span>
+                  <span className="flex-1 truncate">
+                    {depMod ? depMod.name : dep}
+                    {depVer && <span className="text-[10px] opacity-60 ml-1">≥{depVer}</span>}
+                  </span>
                   {isMissing && !depMod && <span className="text-[10px] ml-auto">未安装</span>}
                   {isMissing && depMod && <span className="text-[10px] ml-auto">未启用</span>}
                   {canJump && <ExternalLink size={12} className="flex-shrink-0 opacity-50" />}
@@ -222,10 +241,22 @@ export default function ModDetail({ mod, allMods, onClose, onToggle, onUninstall
           }`}>
           {mod.enabled ? '禁用 MOD' : '启用 MOD'}
         </button>
-        <button onClick={onUninstall}
-          className="w-full py-2 rounded-lg text-sm font-medium text-red-600 bg-red-50 hover:bg-red-100 transition-colors flex items-center justify-center gap-2">
-          <Trash2 size={14} /> 卸载 MOD
-        </button>
+        {mod.source === 'workshop' ? (
+          <>
+            <button onClick={() => window.api.openUrl(mod.workshopUrl)}
+              className="w-full py-2 rounded-lg text-sm font-medium text-sky-700 bg-sky-50 hover:bg-sky-100 transition-colors flex items-center justify-center gap-2">
+              <ExternalLink size={14} /> 打开创意工坊
+            </button>
+            <p className="text-[10px] text-gray-400 leading-relaxed text-center">
+              创意工坊 MOD 由 Steam 管理，无法在此卸载。<br />如需移除请取消订阅。
+            </p>
+          </>
+        ) : (
+          <button onClick={onUninstall}
+            className="w-full py-2 rounded-lg text-sm font-medium text-red-600 bg-red-50 hover:bg-red-100 transition-colors flex items-center justify-center gap-2">
+            <Trash2 size={14} /> 卸载 MOD
+          </button>
+        )}
       </div>
     </div>
   );

@@ -20,10 +20,11 @@ function getModCategory(mod, allMods) {
   return { label: '资源', color: 'bg-teal-50 text-teal-600' };
 }
 
-export default function ModListItem({ mod, allMods, translations, selected, multiSelected, onToggle, onClick, onCheckToggle, draggable }) {
+export default function ModListItem({ mod, allMods, translations, selected, multiSelected, onToggle, onClick, onCheckToggle, draggable, conflict }) {
   const missingDeps = getMissingDeps(mod, allMods);
   const category = getModCategory(mod, allMods);
   const t = translations && translations[mod.id];
+  const isWorkshop = mod.source === 'workshop';
 
   return (
     <div
@@ -68,7 +69,15 @@ export default function ModListItem({ mod, allMods, translations, selected, mult
 
       {/* Tags */}
       <div className="flex items-center gap-1.5 flex-shrink-0">
+        <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${isWorkshop ? 'bg-sky-50 text-sky-600' : 'bg-gray-100 text-gray-500'}`}>
+          {isWorkshop ? '工坊' : '本地'}
+        </span>
         <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${category.color}`}>{category.label}</span>
+        {conflict && (
+          <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-orange-100 text-orange-700" title="同一 Mod ID 在本地与创意工坊同时存在">
+            重复
+          </span>
+        )}
         {mod.has_dll && (
           <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-blue-50 text-blue-500">DLL</span>
         )}
