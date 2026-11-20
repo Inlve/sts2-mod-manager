@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-20
+
 ### Added
 
 - **创意工坊 MOD 支持**：自动扫描 Steam 创意工坊目录（`steamapps/workshop/content/2868840`），与本地 / Nexus 手动安装的 MOD 统一管理，可按来源筛选
@@ -64,6 +66,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - 首个版本：MOD 管理、崩溃分析、存档查看、日志查看
 
-[Unreleased]: https://github.com/Inlve/sts2-mod-manager/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/Inlve/sts2-mod-manager/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/Inlve/sts2-mod-manager/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/Inlve/sts2-mod-manager/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Inlve/sts2-mod-manager/releases/tag/v1.0.0
