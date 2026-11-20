@@ -34,7 +34,7 @@ MOD 描述都是英文的，加了个一键翻译，虽然机翻质量一般但�
 
 **下载地址：**
 
-GitHub：https://github.com/ImogeneOctaviap794/sts2-mod-manager/releases
+GitHub：https://github.com/Inlve/sts2-mod-manager/releases
 
 开源的，代码都在仓库里，有兴趣可以看看。
 

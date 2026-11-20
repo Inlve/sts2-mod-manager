@@ -6,8 +6,8 @@
 
 不用再手动复制文件夹了。装、删、开、关，拖进来就完事。
 
-[![Release](https://img.shields.io/github/v/release/ImogeneOctaviap794/sts2-mod-manager?style=flat-square&color=7c3aed)](https://github.com/ImogeneOctaviap794/sts2-mod-manager/releases)
-[![Stars](https://img.shields.io/github/stars/ImogeneOctaviap794/sts2-mod-manager?style=flat-square&color=f59e0b)](https://github.com/ImogeneOctaviap794/sts2-mod-manager)
+[![Release](https://img.shields.io/github/v/release/Inlve/sts2-mod-manager?style=flat-square&color=7c3aed)](https://github.com/Inlve/sts2-mod-manager/releases)
+[![Stars](https://img.shields.io/github/stars/Inlve/sts2-mod-manager?style=flat-square&color=f59e0b)](https://github.com/Inlve/sts2-mod-manager)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 
 <br>
@@ -51,7 +51,7 @@
 
 ## 📥 下载
 
-👉 [**点这里下载最新版**](https://github.com/ImogeneOctaviap794/sts2-mod-manager/releases)
+👉 [**点这里下载最新版**](https://github.com/Inlve/sts2-mod-manager/releases)
 
 > 安装包约 4MB，内置 WebView2 引导。Win10 / Win11 直接运行。
 
@@ -104,6 +104,16 @@ rsbuild.config.mjs  前端构建配置
 dist/               前端构建产物（gitignore）
 docs/               截图素材
 ```
+
+<br>
+
+## 📄 关于本项目
+
+本项目是 [ImogeneOctaviap794/sts2-mod-manager](https://github.com/ImogeneOctaviap794/sts2-mod-manager) 的延续分支。
+原仓库自 2026-04 起停止更新，本仓库在其基础上继续维护并独立发布版本，
+问题反馈与新功能请提交到[本仓库的 Issues](https://github.com/Inlve/sts2-mod-manager/issues)。
+
+原仓库未提供 LICENSE 文件；本仓库的改动与新增内容按 [MIT](LICENSE) 发布。
 
 <br>
 

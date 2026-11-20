@@ -18,7 +18,7 @@ A beautiful, all-in-one desktop mod manager for Slay the Spire 2 — install, or
 
 A modern, lightweight desktop application for managing your Slay the Spire 2 mods. No more manually copying files — install, enable/disable, and organize all your mods from one beautiful interface.
 
-[url=https://github.com/ImogeneOctaviap794/sts2-mod-manager]GitHub Repository (Open Source)[/url]
+[url=https://github.com/Inlve/sts2-mod-manager]GitHub Repository (Open Source)[/url]
 
 [size=4][b]✨ Features[/b][/size]
 
@@ -80,14 +80,14 @@ A modern, lightweight desktop application for managing your Slay the Spire 2 mod
 [size=4][b]🔒 Privacy & Safety[/b][/size]
 
 [list]
-[*]Fully open source — [url=https://github.com/ImogeneOctaviap794/sts2-mod-manager]view the code on GitHub[/url]
+[*]Fully open source — [url=https://github.com/Inlve/sts2-mod-manager]view the code on GitHub[/url]
 [*]The only network request is an optional translation API call (MyMemory) when you click the Translate button
 [*]No telemetry, no analytics, no accounts required
 [/list]
 
 [size=4][b]🐛 Bug Reports & Feature Requests[/b][/size]
 
-Please report issues on [url=https://github.com/ImogeneOctaviap794/sts2-mod-manager/issues]GitHub Issues[/url] or leave a comment on this mod page.
+Please report issues on [url=https://github.com/Inlve/sts2-mod-manager/issues]GitHub Issues[/url] or leave a comment on this mod page.
 
 ---
 
