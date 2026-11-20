@@ -1,9 +1,13 @@
 import React from 'react';
-import { Minus, Square, X, Github } from 'lucide-react';
+import { Minus, Square, X } from 'lucide-react';
+import GithubIcon from './GithubIcon';
 
 export default function TitleBar() {
   return (
-    <div className="titlebar flex items-center justify-between h-10 bg-gray-900 px-4 select-none">
+    <div
+      className="titlebar flex items-center justify-between h-10 bg-gray-900 px-4 select-none"
+      data-tauri-drag-region
+    >
       <div className="flex items-center gap-2">
         <span className="text-white text-sm font-semibold tracking-wide">STS2 Mod Manager</span>
       </div>
@@ -11,7 +15,7 @@ export default function TitleBar() {
         <button onClick={() => window.api.openUrl('https://github.com/ImogeneOctaviap794/sts2-mod-manager')}
           className="w-10 h-10 flex items-center justify-center text-gray-400 hover:text-white hover:bg-gray-700 transition-colors"
           title="GitHub">
-          <Github size={14} />
+          <GithubIcon size={14} />
         </button>
         <button onClick={() => window.api.minimize()}
           className="w-10 h-10 flex items-center justify-center text-gray-400 hover:text-white hover:bg-gray-700 transition-colors">

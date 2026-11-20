@@ -1,5 +1,5 @@
-// Tauri API bridge - replaces Electron's preload.js
-// Provides the same window.api interface using Tauri invoke
+// 前端唯一的原生能力入口：把 Rust 侧的 Tauri 命令包装成 window.api。
+// 所有 UI 组件只认这一个对象，不直接触碰 window.__TAURI__。
 
 const { invoke } = window.__TAURI__.core;
 const { getCurrentWindow } = window.__TAURI__.window;
@@ -52,8 +52,30 @@ window.api = {
 
   // Mods
   scanMods: () => invoke('mods_scan'),
-  toggleMod: (modInfo) => invoke('mods_toggle', { modInfo: { isFolder: modInfo.isFolder, folderName: modInfo.folderName, files: modInfo.files, enabled: modInfo.enabled } }),
-  uninstallMod: (modInfo) => invoke('mods_uninstall', { modInfo: { isFolder: modInfo.isFolder, folderName: modInfo.folderName, files: modInfo.files, enabled: modInfo.enabled } }),
+  // 启停需要带上 mod 的 id / 来源 / 位置：
+  // 创意工坊 Mod 只能改游戏设置，本地 Mod 可能还需要搬目录
+  toggleMod: (modInfo) => invoke('mods_toggle', {
+    modInfo: {
+      isFolder: modInfo.isFolder,
+      folderName: modInfo.folderName,
+      files: modInfo.files,
+      enabled: modInfo.enabled,
+      id: modInfo.id ?? null,
+      source: modInfo.source ?? null,
+      location: modInfo.location ?? null,
+    },
+  }),
+  uninstallMod: (modInfo) => invoke('mods_uninstall', {
+    modInfo: {
+      isFolder: modInfo.isFolder,
+      folderName: modInfo.folderName,
+      files: modInfo.files,
+      enabled: modInfo.enabled,
+      id: modInfo.id ?? null,
+      source: modInfo.source ?? null,
+      location: modInfo.location ?? null,
+    },
+  }),
   installMod: () => invoke('mods_install'),
   installDrop: (filePaths) => invoke('mods_install_drop', { filePaths }),
   backupMods: () => invoke('mods_backup'),
@@ -99,4 +121,6 @@ window.api = {
   exportSave: (opts) => invoke('saves_export', { opts }),
   importSave: (opts) => invoke('saves_import', { opts }),
   deleteBackup: (backupPath) => invoke('saves_delete_backup', { backupPath }),
+  // 普通存档 ↔ MOD 存档 转换
+  convertSave: (opts) => invoke('saves_convert', { opts }),
 };

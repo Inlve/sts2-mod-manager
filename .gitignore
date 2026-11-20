@@ -1,20 +1,25 @@
 node_modules/
 release/
-dist/win-unpacked/
-dist/builder-debug.yml
-dist/*.exe
-test_*.js
-*.zip
-.DS_Store
-Thumbs.db
+
+# 前端构建产物（Rsbuild）
+dist/
+.npm-cache/
 
 # Tauri
 src-tauri/target/
-dist-tauri/renderer.js
-dist-tauri/renderer.js.LICENSE.txt
+src-tauri/gen/
 
 # Build outputs
 builds/
 
-# Temp screenshots (hash-named)
+# 临时文件
+*.zip
+test_*.js
+.DS_Store
+Thumbs.db
+
+# 临时截图（hash 命名）
 /[0-9a-f][0-9a-f][0-9a-f]*.png
+
+# UI 测试截图产物
+tests/artifacts/

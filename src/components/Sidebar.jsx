@@ -1,6 +1,6 @@
 import React from 'react';
 import {
-  Package, FileText, FolderOpen, Save, HardDrive, ExternalLink, Github,
+  Package, FileText, FolderOpen, Save, HardDrive, ExternalLink,
 } from 'lucide-react';
 
 const navItems = [
