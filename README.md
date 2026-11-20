@@ -18,6 +18,10 @@
 
 <img src="docs/preview-saves.png" width="90%" alt="存档管理界面" />
 
+<br><br>
+
+<img src="docs/preview-logs.png" width="90%" alt="游戏日志界面" />
+
 </div>
 
 <br>
