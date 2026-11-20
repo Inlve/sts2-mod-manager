@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-11-20
+
 ### Fixed
 
 - 普通与 MOD 存档互转时先暂存并校验文件，避免空源或复制失败清空目标槽位。替换失败时自动回滚，错误提示包含已生成的 ZIP 备份路径。
@@ -70,7 +72,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - 首个版本：MOD 管理、崩溃分析、存档查看、日志查看
 
-[Unreleased]: https://github.com/Inlve/sts2-mod-manager/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/Inlve/sts2-mod-manager/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/Inlve/sts2-mod-manager/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/Inlve/sts2-mod-manager/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/Inlve/sts2-mod-manager/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Inlve/sts2-mod-manager/releases/tag/v1.0.0
