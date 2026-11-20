@@ -1,0 +1,86 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要构建并发布的 tag（如 v1.2.0）'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and publish
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          REF="${{ inputs.tag || github.ref_name }}"
+          echo "tag=$REF" >> "$GITHUB_OUTPUT"
+          echo "version=${REF#v}" >> "$GITHUB_OUTPUT"
+
+      # tauri.conf.json 的 beforeBuildCommand 会自动跑 `npm run build`（Rsbuild）
+      - name: Build application
+        run: npm run tauri:build
+
+      - name: Generate checksums
+        shell: pwsh
+        run: |
+          $files = @('src-tauri/target/release/sts2-mod-manager.exe')
+          $files += Get-ChildItem 'src-tauri/target/release/bundle/nsis/*.exe' | ForEach-Object { $_.FullName }
+          $lines = foreach ($f in $files) {
+            $hash = (Get-FileHash -Path $f -Algorithm SHA256).Hash.ToLower()
+            "$hash  $(Split-Path -Path $f -Leaf)"
+          }
+          $lines | Set-Content -Path checksums.txt -Encoding utf8
+          Get-Content checksums.txt
+
+      - name: Extract release notes from CHANGELOG
+        shell: bash
+        run: node scripts/changelog-extract.mjs "${{ steps.version.outputs.version }}" > release-notes.md
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          body_path: release-notes.md
+          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
+          fail_on_unmatched_files: true
+          files: |
+            src-tauri/target/release/sts2-mod-manager.exe
+            src-tauri/target/release/bundle/nsis/*.exe
+            checksums.txt

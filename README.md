@@ -30,14 +30,17 @@
 
 | | 功能 | 说明 |
 |---|---|---|
-| 📦 | **MOD 管理** | 安装 / 卸载 / 启用 / 禁用，支持拖拽 `.zip` `.rar` 直接安装 |
-| �️ | **风险信号** | 自动标出缺失依赖、区分框架前置 / 玩法改动 / 资源类 MOD，一眼看清能不能安全启用 |
-| 🔗 | **依赖跳转** | 详情面板中点击依赖项直接跳转到对应 MOD |
+| 📦 | **MOD 管理** | 安装 / 卸载 / 启用 / 禁用，支持拖拽 `.zip` 或文件夹直接安装 |
+| 🎮 | **双来源管理** | 自动识别 **Steam 创意工坊**订阅的 MOD 与**本地 / Nexus 手动安装**的 MOD，可分开筛选、统一启停 |
+| 🧩 | **重复 ID 检测** | 同一 MOD 同时来自工坊和本地时会标出来，避免游戏重复加载 |
+| �️ | **风险信号** | 自动标出缺失依赖，区分框架前置 / 玩法改动 / 资源类 MOD，一眼看清能不能安全启用 |
+| 🔗 | **依赖跳转** | 详情面板中点击依赖项直接跳转到对应 MOD，并显示所需最低版本 |
 | 🔀 | **智能排序** | 按名称 / 依赖问题优先 / 影响玩法 / 分类 / 大小排序 |
 | 🖼️ | **双视图模式** | 卡片网格视图（默认）和双栏列表视图随时切换 |
 | 🧭 | **首次引导** | 3 步卡片式引导流程：选目录 → 装 MOD → 启动验证，新手友好 |
-| ⚠️ | **操作确认** | 卸载、批量卸载、应用配置、还原备份等风险操作弹出确认，说明后果再执行 |
+| ⚠️ | **操作确认** | 卸载、批量卸载、应用配置、还原备份、存档转换等风险操作弹出确认，说明后果再执行 |
 | �💾 | **存档管理** | 普通存档 & MOD 存档分开展示，一键导出备份、导入还原 |
+| 🔁 | **存档转换** | 普通存档 ↔ MOD 存档 一键互转（可含回放），覆盖前自动备份原存档 |
 | 📋 | **游戏日志** | 实时查看最新日志，出问题秒定位 |
 | 🔍 | **崩溃分析** | 游戏退出后自动扫日志，精确到哪个 MOD 炸了 |
 | 🌐 | **MOD 翻译** | 英文描述看不懂？一键翻译成中文 |
@@ -66,23 +69,23 @@
 ## 🛠 本地开发
 
 ```bash
-npm install              # 装依赖
-npm run tauri:dev        # Tauri 开发模式
-npm run tauri:build      # Tauri 打包
-npm run dev              # Electron 开发模式
+npm install          # 装依赖
+npm run tauri:dev    # 开发模式（Rsbuild dev server + Tauri 热重载）
+npm run tauri:build  # 打包 NSIS 安装包 + 免安装 exe
+npm run build        # 只构建前端（产物在 dist/）
 ```
 
-> Tauri 打包需要 [Rust](https://rustup.rs/) + [VS Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)（勾选 C++ 桌面开发）
+> 打包需要 [Rust](https://rustup.rs/) + [VS Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)（勾选 C++ 桌面开发）
 
 <br>
 
 ## 📐 技术栈
 
 ```
-前端    React 18 + TailwindCSS + Lucide Icons
+前端    React 19 + TailwindCSS 3 + Lucide Icons
+构建    Rsbuild 2（Rspack + SWC，已移除 Babel/Webpack）
 后端    Rust (Tauri v2)
-打包    NSIS 安装包 (~4MB)
-备选    Electron 版本代码也保留着
+打包    NSIS 安装包 + 免安装 exe
 ```
 
 <br>
@@ -90,13 +93,26 @@ npm run dev              # Electron 开发模式
 ## 📁 项目结构
 
 ```
-src/              前端源码 (React)
-src-tauri/        后端源码 (Rust)
-dist-tauri/       前端构建产物
-main.js           Electron 主进程
-preload.js        Electron 预加载
-docs/             截图素材
+src/                前端源码 (React)
+  index.jsx         入口：先挂载 window.api，再渲染 React
+  index.html        页面模板（Rsbuild 注入资源）
+  tauri-api.js      window.api 桥接层，UI 唯一的原生能力入口
+  components/       UI 组件
+src-tauri/          后端源码 (Rust)
+  src/              mods / saves / steam / modsettings / game / logs …
+rsbuild.config.mjs  前端构建配置
+dist/               前端构建产物（gitignore）
+docs/               截图素材
 ```
+
+<br>
+
+## 🤝 参与贡献
+
+提交遵循 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/)，
+流程与发布步骤见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+版本变更记录统一维护在 [CHANGELOG.md](CHANGELOG.md)。
 
 <br>
 
