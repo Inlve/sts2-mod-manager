@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Download, Upload, RefreshCw, Trash2, HardDrive, Gamepad2, FolderOpen, Clock, Trophy, Sword, Layers, CreditCard } from 'lucide-react';
+import { Download, Upload, RefreshCw, Trash2, HardDrive, Gamepad2, FolderOpen, Clock, Trophy, Sword, Layers, CreditCard, AlertTriangle } from 'lucide-react';
 
 function formatSize(bytes) {
   if (!bytes) return '0 B';
@@ -149,6 +149,12 @@ export default function SaveManager() {
   const [data, setData] = useState({ slots: [], backups: [] });
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState(null);
+  // 存档转换：按后端是否真的注册了该命令来决定是否显示入口
+  const canConvert = typeof window.api?.convertSave === 'function';
+  const [includeReplays, setIncludeReplays] = useState(true);
+  const [backupFirst, setBackupFirst] = useState(true);
+  const [converting, setConverting] = useState(false);
+  const [confirmConvert, setConfirmConvert] = useState(null);
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -163,6 +169,32 @@ export default function SaveManager() {
   };
 
   useEffect(() => { refresh(); }, []);
+
+  const handleConvert = async (slot, direction) => {
+    setConfirmConvert(null);
+    setConverting(true);
+    try {
+      const result = await window.api.convertSave({
+        slot,
+        direction,
+        includeReplays,
+        backup: backupFirst,
+      });
+      if (result.success) {
+        const mb = (result.copiedBytes / (1024 * 1024)).toFixed(1);
+        showToast(
+          `${SLOT_LABELS[slot]} 已${direction === 'to_modded' ? '转为 MOD 存档' : '转为普通存档'}`
+          + `（${result.copiedFiles} 个文件 / ${mb} MB${result.backupPath ? '，原存档已备份' : ''}）`
+        );
+        refresh();
+      } else if (result.error) {
+        showToast(result.error, 'error');
+      }
+    } catch (e) {
+      showToast(e.message || '转换失败', 'error');
+    }
+    setConverting(false);
+  };
 
   const handleExport = async (slot, modded) => {
     const result = await window.api.exportSave({ slot, modded });
@@ -258,6 +290,83 @@ export default function SaveManager() {
           </div>
         </section>
 
+        {/* 普通 ↔ MOD 存档转换 */}
+        {canConvert && (
+          <section>
+            <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3 flex items-center gap-2">
+              <Download size={14} /> 存档转换
+            </h2>
+            <div className="bg-white rounded-xl border border-gray-100 p-5">
+              <p className="text-xs text-gray-500 leading-relaxed mb-3">
+                游戏把两套进度完全隔离：普通存档和 MOD 存档互不可见。转换会把源槽位的
+                存档（进度、偏好、历史记录，可选回放）复制到目标槽位并替换其内容。
+              </p>
+
+              <div className="flex items-center gap-4 mb-3">
+                <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer">
+                  <input type="checkbox" checked={includeReplays} onChange={e => setIncludeReplays(e.target.checked)}
+                    className="w-3.5 h-3.5 rounded border-gray-300 text-blue-500" />
+                  同时转换回放
+                </label>
+                <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer">
+                  <input type="checkbox" checked={backupFirst} onChange={e => setBackupFirst(e.target.checked)}
+                    className="w-3.5 h-3.5 rounded border-gray-300 text-blue-500" />
+                  覆盖前自动备份原存档
+                </label>
+              </div>
+
+              <div className="divide-y divide-gray-50">
+                {['profile1', 'profile2', 'profile3'].map(slotName => {
+                  const normal = normalSlots.find(s => s.slot === slotName);
+                  const modded = moddedSlots.find(s => s.slot === slotName);
+                  const hasNormal = normal && !normal.empty;
+                  const hasModded = modded && !modded.empty;
+                  return (
+                    <div key={slotName} className="flex items-center justify-between py-2.5">
+                      <div className="min-w-0">
+                        <p className="text-xs font-medium text-gray-800">{SLOT_LABELS[slotName]}</p>
+                        <p className="text-[11px] text-gray-400 mt-0.5">
+                          普通：{hasNormal ? '有数据' : '空'}
+                          <span className="mx-1.5 text-gray-200">|</span>
+                          MOD：{hasModded ? '有数据' : '空'}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2 flex-shrink-0">
+                        <button
+                          disabled={!hasModded || converting}
+                          onClick={() => setConfirmConvert({ slot: slotName, direction: 'to_normal' })}
+                          className={`px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-colors ${
+                            !hasModded || converting
+                              ? 'bg-gray-50 text-gray-300 cursor-not-allowed'
+                              : 'bg-purple-50 text-purple-700 hover:bg-purple-100'
+                          }`}>
+                          MOD → 普通
+                        </button>
+                        <button
+                          disabled={!hasNormal || converting}
+                          onClick={() => setConfirmConvert({ slot: slotName, direction: 'to_modded' })}
+                          className={`px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-colors ${
+                            !hasNormal || converting
+                              ? 'bg-gray-50 text-gray-300 cursor-not-allowed'
+                              : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                          }`}>
+                          普通 → MOD
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {converting && (
+                <p className="mt-3 text-[11px] text-amber-600 flex items-center gap-1.5">
+                  <RefreshCw size={11} className="animate-spin" /> 正在转换，请勿关闭程序…
+                </p>
+              )}
+            </div>
+          </section>
+        )}
+
         {/* Backups */}
         {data.backups.length > 0 && (
           <section>
@@ -290,6 +399,45 @@ export default function SaveManager() {
           </div>
         )}
       </div>
+
+      {/* 转换确认 */}
+      {confirmConvert && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50" onClick={() => setConfirmConvert(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-[420px] overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-3 px-6 py-4 border-b border-gray-100">
+              <div className="w-10 h-10 rounded-full bg-amber-50 flex items-center justify-center">
+                <AlertTriangle size={20} className="text-amber-500" />
+              </div>
+              <h3 className="font-bold text-gray-900">
+                {SLOT_LABELS[confirmConvert.slot]}
+                {confirmConvert.direction === 'to_modded' ? ' 普通 → MOD' : ' MOD → 普通'}
+              </h3>
+            </div>
+            <div className="px-6 py-4 space-y-2">
+              <p className="text-sm text-gray-600 leading-relaxed">
+                目标槽位 <b>「{SLOT_LABELS[confirmConvert.slot]}」</b> 的存档将被源槽位内容
+                <b>替换</b>，原有的当前局和历史记录会被覆盖。
+              </p>
+              <p className="text-xs text-gray-500 leading-relaxed">
+                {backupFirst
+                  ? '覆盖前会自动把目标槽位打包备份到 save_backups 目录，可随时恢复。'
+                  : '⚠ 已关闭自动备份，此操作不可撤销。'}
+              </p>
+              <p className="text-xs text-gray-400">游戏正在运行时无法转换，请先退出游戏。</p>
+            </div>
+            <div className="px-6 py-4 border-t border-gray-100 flex gap-2">
+              <button onClick={() => handleConvert(confirmConvert.slot, confirmConvert.direction)}
+                className="flex-1 py-2.5 rounded-lg text-sm font-medium bg-gray-900 text-white hover:bg-gray-800 transition-colors">
+                开始转换
+              </button>
+              <button onClick={() => setConfirmConvert(null)}
+                className="flex-1 py-2.5 rounded-lg text-sm font-medium border border-gray-200 text-gray-700 hover:bg-gray-50 transition-colors">
+                取消
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Toast */}
       {toast && (
