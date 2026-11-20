@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -79,25 +78,8 @@ fn get_appdata() -> Option<PathBuf> {
 }
 
 fn get_steam_user_dir() -> Option<PathBuf> {
-    let appdata = get_appdata()?;
-    let steam_dir = appdata.join("SlayTheSpire2").join("steam");
-    if !steam_dir.exists() {
-        return None;
-    }
-    let users: Vec<_> = fs::read_dir(&steam_dir)
-        .ok()?
-        .flatten()
-        .filter(|e| {
-            e.file_name()
-                .to_str()
-                .map(|s| s.chars().all(|c| c.is_ascii_digit()))
-                .unwrap_or(false)
-        })
-        .collect();
-    if users.is_empty() {
-        return None;
-    }
-    Some(users[0].path())
+    // 统一走 steam 模块（多账号时取最近活跃的那个）
+    crate::steam::steam_user_dir()
 }
 
 fn get_save_backup_dir() -> PathBuf {
@@ -218,7 +200,7 @@ fn scan_save_slot(user_dir: &Path, slot: &str, modded: bool) -> Option<SaveSlot>
     let has_progress = progress_path.exists();
     let has_prefs = saves_dir.join("prefs.save").exists();
 
-    let (mut total_size, mut last_modified) = if saves_dir.exists() {
+    let (mut total_size, last_modified) = if saves_dir.exists() {
         walk_size_and_mtime(&saves_dir)
     } else {
         (0, 0)
@@ -254,32 +236,47 @@ fn scan_save_slot(user_dir: &Path, slot: &str, modded: bool) -> Option<SaveSlot>
     })
 }
 
+/// 把 Unix 秒数格式化成 `YYYY-MM-DDTHH:MM:SS`。
+///
+/// 说明：旧实现返回的是 `format!("{:?}", SystemTime)`，即
+/// `SystemTime { tv_sec: ... }` 调试字符串，前端 `new Date()` 解析失败后
+/// 会显示 Invalid Date——这是从 Electron 版迁移到 Rust 时引入的回归。
+/// 这里用 Howard Hinnant 的 civil-from-days 算法自己算日期，
+/// 避免为了一个时间格式化再引入 chrono 依赖。
 fn chrono_from_timestamp(secs: i64) -> String {
-    use std::time::{Duration, UNIX_EPOCH};
-    let d = UNIX_EPOCH + Duration::from_secs(secs as u64);
-    let datetime: std::time::SystemTime = d;
-    // Format as ISO-like string
-    format!("{:?}", datetime)
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let (h, mi, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+
+    // civil_from_days
+    let z = days + 719_468;
+    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if m <= 2 { y + 1 } else { y };
+
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+        year, m, d, h, mi, s
+    )
 }
 
+fn now_iso() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    chrono_from_timestamp(secs)
+}
+
+/// 用于文件名的时间戳：`YYYY-MM-DDTHH-MM-SS`（冒号在 Windows 文件名里非法）。
 fn timestamp_string() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = now.as_secs();
-    let hours = (secs / 3600) % 24;
-    let mins = (secs / 60) % 60;
-    let s = secs % 60;
-    format!(
-        "{}-{:02}-{:02}T{:02}-{:02}-{:02}",
-        1970 + secs / 31557600, // approximate year
-        ((secs % 31557600) / 2629800) + 1, // approximate month
-        ((secs % 2629800) / 86400) + 1, // approximate day
-        hours,
-        mins,
-        s
-    )
+    now_iso().replace(':', "-")
 }
 
 #[tauri::command]
@@ -419,7 +416,7 @@ pub async fn saves_export(
     let meta_json = serde_json::json!({
         "slot": opts.slot,
         "modded": opts.modded,
-        "exportTime": timestamp_string(),
+        "exportTime": now_iso(),
     });
     zip_writer
         .start_file("_meta.json", options)
@@ -551,4 +548,206 @@ pub fn saves_delete_backup(backup_path: String) -> SimpleResult {
         }
     }
     SimpleResult { success: true, error: None }
+}
+
+// ── 普通存档 ↔ MOD 存档 转换 ──
+//
+// 游戏本身把两套进度完全隔离：普通档在 `steam/<id>/profileN`，
+// MOD 档在 `steam/<id>/modded/profileN`，互相不可见。
+// 玩家想"把 MOD 档的进度搬到普通档"只能自己复制文件夹，
+// 这里把它做成带备份的一键操作。
+
+#[derive(Deserialize)]
+pub struct SaveConvertOpts {
+    /// profile1 / profile2 / profile3
+    pub slot: String,
+    /// "to_modded"（普通 → MOD）| "to_normal"（MOD → 普通）
+    pub direction: String,
+    /// 是否连回放一起搬
+    #[serde(rename = "includeReplays", default = "default_true")]
+    pub include_replays: bool,
+    /// 覆盖前是否先自动备份目标槽位
+    #[serde(default = "default_true")]
+    pub backup: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Serialize)]
+pub struct ConvertResult {
+    pub success: bool,
+    pub error: Option<String>,
+    pub slot: String,
+    pub direction: String,
+    #[serde(rename = "copiedFiles")]
+    pub copied_files: usize,
+    #[serde(rename = "copiedBytes")]
+    pub copied_bytes: u64,
+    #[serde(rename = "backupPath")]
+    pub backup_path: Option<String>,
+}
+
+/// 递归复制目录，返回 (文件数, 字节数)。
+fn copy_tree_counted(src: &Path, dst: &Path) -> Result<(usize, u64), String> {
+    let mut files = 0usize;
+    let mut bytes = 0u64;
+    if !src.exists() {
+        return Ok((0, 0));
+    }
+    fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+    for entry in fs::read_dir(src).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if from.is_dir() {
+            let (f, b) = copy_tree_counted(&from, &to)?;
+            files += f;
+            bytes += b;
+        } else {
+            if let Some(parent) = to.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            let size = fs::copy(&from, &to).map_err(|e| e.to_string())?;
+            files += 1;
+            bytes += size;
+        }
+    }
+    Ok((files, bytes))
+}
+
+#[tauri::command]
+pub fn saves_convert(opts: SaveConvertOpts) -> ConvertResult {
+    // 先把进错误结果要用到的字段复制出来，避免闭包借用 opts 后
+    // 又在末尾移出 opts.slot / opts.direction（借用检查会不答应）
+    let slot_echo = opts.slot.clone();
+    let direction_echo = opts.direction.clone();
+    let fail = |msg: String| ConvertResult {
+        success: false,
+        error: Some(msg),
+        slot: slot_echo.clone(),
+        direction: direction_echo.clone(),
+        copied_files: 0,
+        copied_bytes: 0,
+        backup_path: None,
+    };
+
+    // 存档正被游戏读写时搬家会损坏数据
+    if crate::game::is_game_running() {
+        return fail("游戏正在运行，请先退出游戏再转换存档".into());
+    }
+
+    let user_dir = match get_steam_user_dir() {
+        Some(d) => d,
+        None => return fail("未找到游戏存档目录".into()),
+    };
+
+    if !["profile1", "profile2", "profile3"].contains(&opts.slot.as_str()) {
+        return fail(format!("未知的存档槽位: {}", opts.slot));
+    }
+
+    let (src_root, dst_root) = match opts.direction.as_str() {
+        "to_modded" => (user_dir.clone(), user_dir.join("modded")),
+        "to_normal" => (user_dir.join("modded"), user_dir.clone()),
+        other => return fail(format!("未知的转换方向: {}", other)),
+    };
+
+    let src = src_root.join(&opts.slot);
+    let dst = dst_root.join(&opts.slot);
+
+    if !src.exists() {
+        return fail(format!(
+            "源存档 {} 不存在（{}）",
+            opts.slot,
+            if opts.direction == "to_modded" {
+                "普通存档里没有这个槽位"
+            } else {
+                "MOD 存档里没有这个槽位"
+            }
+        ));
+    }
+
+    let tag = if opts.direction == "to_modded" {
+        format!("{}_normal", opts.slot)
+    } else {
+        format!("{}_modded", opts.slot)
+    };
+
+    // ── 备份目标槽位 ──
+    let mut backup_path: Option<String> = None;
+    if opts.backup && dst.exists() {
+        let dir = get_save_backup_dir();
+        let path = dir.join(format!("convert_{}_before_{}.zip", tag, timestamp_string()));
+        let file = match fs::File::create(&path) {
+            Ok(f) => f,
+            Err(e) => return fail(format!("创建备份失败: {}", e)),
+        };
+        let mut zip_writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        let listing: SimpleResult = {
+            match add_dir_to_zip(
+                &mut zip_writer,
+                dst.parent().unwrap_or(&dst),
+                &dst,
+                options,
+            ) {
+                Ok(_) => SimpleResult { success: true, error: None },
+                Err(e) => SimpleResult { success: false, error: Some(e) },
+            }
+        };
+        if let Some(e) = listing.error {
+            return fail(format!("备份失败: {}", e));
+        }
+        if let Err(e) = zip_writer.finish() {
+            return fail(format!("备份写入失败: {}", e));
+        }
+        backup_path = Some(path.to_string_lossy().to_string());
+    }
+
+    // ── 替换式复制：先清掉目标槽位，避免残留上一次的当前局文件 ──
+    if dst.exists() {
+        if let Err(e) = fs::remove_dir_all(&dst) {
+            return fail(format!("清理目标槽位失败: {}", e));
+        }
+    }
+    if let Err(e) = fs::create_dir_all(&dst) {
+        return fail(format!("创建目标槽位失败: {}", e));
+    }
+
+    let mut copied_files = 0usize;
+    let mut copied_bytes = 0u64;
+
+    match copy_tree_counted(&src.join("saves"), &dst.join("saves")) {
+        Ok((f, b)) => {
+            copied_files += f;
+            copied_bytes += b;
+        }
+        Err(e) => return fail(format!("复制存档失败: {}", e)),
+    }
+
+    if opts.include_replays {
+        match copy_tree_counted(&src.join("replays"), &dst.join("replays")) {
+            Ok((f, b)) => {
+                copied_files += f;
+                copied_bytes += b;
+            }
+            Err(e) => return fail(format!("复制回放失败: {}", e)),
+        }
+    }
+
+    if copied_files == 0 {
+        return fail("源槽位里没有可转换的存档文件".into());
+    }
+
+    ConvertResult {
+        success: true,
+        error: None,
+        slot: opts.slot,
+        direction: opts.direction,
+        copied_files,
+        copied_bytes,
+        backup_path,
+    }
 }

@@ -1,9 +1,11 @@
 mod config;
 mod game;
 mod logs;
+mod modsettings;
 mod mods;
 mod profiles;
 mod saves;
+mod steam;
 mod translate;
 mod translations;
 
@@ -15,8 +17,32 @@ pub struct AppState {
     pub game_state: Mutex<String>, // "idle" | "launching" | "running"
 }
 
+/// 让第二个实例把已有窗口提到前台，而不是再开一个。
+///
+/// 之前 Cargo.toml 里声明了 single-instance 插件却从未 `.plugin()` 初始化，
+/// 结果可以多开：两个实例同时搬 mods 目录会互相踩，安装器也会因为
+/// exe 被占用而覆盖失败。这里补上，并且必须是第一个注册的插件。
+#[cfg(desktop)]
+fn single_instance_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+    tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        if let Some(win) = app.get_webview_window("main") {
+            let _ = win.unminimize();
+            let _ = win.show();
+            let _ = win.set_focus();
+        }
+    })
+}
+
 pub fn run() {
-    tauri::Builder::default()
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default();
+
+    #[cfg(desktop)]
+    {
+        builder = builder.plugin(single_instance_plugin());
+    }
+
+    builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
@@ -67,6 +93,7 @@ pub fn run() {
             saves::saves_export,
             saves::saves_import,
             saves::saves_delete_backup,
+            saves::saves_convert,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|e| {

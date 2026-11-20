@@ -143,7 +143,7 @@ pub fn game_get_state(state: tauri::State<'_, AppState>) -> String {
     }
 }
 
-fn is_game_running() -> bool {
+pub(crate) fn is_game_running() -> bool {
     #[cfg(target_os = "windows")]
     {
         use sysinfo::System;

@@ -16,6 +16,12 @@ pub struct InitResult {
     pub game_path: Option<String>,
     #[serde(rename = "modsDir")]
     pub mods_dir: Option<String>,
+    /// 从游戏目录的 release_info.json 读到的版本号（如 v0.113.1）
+    #[serde(rename = "gameVersion")]
+    pub game_version: Option<String>,
+    /// 检测到的创意工坊内容目录数量，0 表示没有订阅或没装 Steam 版
+    #[serde(rename = "workshopDirs")]
+    pub workshop_dirs: usize,
 }
 
 fn config_dir() -> PathBuf {
@@ -48,81 +54,22 @@ pub fn save_config(cfg: &Config) {
 }
 
 fn detect_game_path() -> Option<String> {
-    // Windows Steam library paths
-    let steam_paths = vec![
-        r"C:\Program Files (x86)\Steam",
-        r"C:\Program Files\Steam",
-        r"D:\Steam",
-        r"D:\SteamLibrary",
-        r"E:\SteamLibrary",
-    ];
-
-    for sp in &steam_paths {
-        let vdf_path = Path::new(sp)
-            .join("steamapps")
-            .join("libraryfolders.vdf");
-        if vdf_path.exists() {
-            if let Ok(content) = fs::read_to_string(&vdf_path) {
-                // Parse "path" entries from VDF
-                for cap in content.lines() {
-                    if let Some(start) = cap.find("\"path\"") {
-                        let rest = &cap[start + 6..];
-                        if let Some(s) = rest.find('"') {
-                            let rest2 = &rest[s + 1..];
-                            if let Some(e) = rest2.find('"') {
-                                let lib_path = rest2[..e].replace("\\\\", "\\");
-                                let game_dir = Path::new(&lib_path)
-                                    .join("steamapps")
-                                    .join("common")
-                                    .join("Slay the Spire 2");
-                                if game_dir.exists() {
-                                    return Some(game_dir.to_string_lossy().to_string());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        // Direct check
-        let game_dir = Path::new(sp)
-            .join("steamapps")
-            .join("common")
-            .join("Slay the Spire 2");
-        if game_dir.exists() {
-            return Some(game_dir.to_string_lossy().to_string());
-        }
-    }
-
-    let direct_paths = vec![
-        r"D:\SteamLibrary\steamapps\common\Slay the Spire 2",
-        r"C:\Program Files (x86)\Steam\steamapps\common\Slay the Spire 2",
-    ];
-    for p in direct_paths {
-        if Path::new(p).exists() {
-            return Some(p.to_string());
-        }
-    }
-    None
+    // 库发现逻辑统一在 steam 模块里，这里只负责"没有用户配置时自动找一次"
+    crate::steam::find_game_dir().map(|p| p.to_string_lossy().to_string())
 }
 
 #[tauri::command]
 pub fn app_init(state: tauri::State<'_, AppState>) -> InitResult {
     let cfg = load_config();
-    let detected = if let Some(ref gp) = cfg.game_path {
-        if Path::new(gp).exists() {
-            Some(gp.clone())
-        } else {
-            detect_game_path()
-        }
-    } else {
-        detect_game_path()
+    let detected = match cfg.game_path {
+        Some(ref gp) if Path::new(gp).exists() => Some(gp.clone()),
+        _ => detect_game_path(),
     };
 
     if let Some(ref gp) = detected {
         let mut state_gp = state.game_path.lock().unwrap();
         *state_gp = Some(gp.clone());
-        // Persist if auto-detected
+        // 自动探测到的路径要落盘，否则每次启动都重新找
         if cfg.game_path.as_deref() != Some(gp.as_str()) {
             let mut new_cfg = cfg;
             new_cfg.game_path = Some(gp.clone());
@@ -130,13 +77,20 @@ pub fn app_init(state: tauri::State<'_, AppState>) -> InitResult {
         }
     }
 
-    let mods_dir = detected
+    let game_dir = detected.as_ref().map(PathBuf::from);
+    let mods_dir = game_dir
         .as_ref()
-        .map(|p| Path::new(p).join("mods").to_string_lossy().to_string());
+        .map(|p| p.join("mods").to_string_lossy().to_string());
+    let game_version = game_dir
+        .as_ref()
+        .and_then(|p| crate::steam::game_version(p));
+    let workshop_dirs = crate::steam::workshop_content_dirs().len();
 
     InitResult {
         game_path: detected,
         mods_dir,
+        game_version,
+        workshop_dirs,
     }
 }
 
@@ -160,10 +114,15 @@ pub async fn app_select_game_path(
         cfg.game_path = Some(gp.clone());
         save_config(&cfg);
 
-        let mods_dir = Path::new(&gp).join("mods").to_string_lossy().to_string();
+        let game_dir = PathBuf::from(&gp);
+        let mods_dir = game_dir.join("mods").to_string_lossy().to_string();
+        let game_version = crate::steam::game_version(&game_dir);
+        let workshop_dirs = crate::steam::workshop_content_dirs().len();
         Ok(Some(InitResult {
             game_path: Some(gp),
             mods_dir: Some(mods_dir),
+            game_version,
+            workshop_dirs,
         }))
     } else {
         Ok(None)
